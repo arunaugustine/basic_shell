@@ -1,1 +1,3 @@
 Welcome to Charlie's basic_shell project.
+Purpose: Contruct a simple shell that will execute by parsing the commands
+passed to it and executing it by searching it in the PATH variable.
