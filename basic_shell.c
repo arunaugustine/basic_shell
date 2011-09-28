@@ -40,7 +40,7 @@ aa_status_codes_t execute_command (char* tokens[MAX_TOKENS])
     exec_status = execvp(command, tokens);
     if (exec_status == -1){
       //some error happened during execvp
-      printf("Bad command :( . Please try again\n");
+      printf("Bad command :( Please try again\n");
       exit(EXECVP_FAILED);
     }
     else
@@ -99,7 +99,7 @@ int main ( void ) {
     }
     /* Handle Ctl-D */
     else {
-      printf ("User entered ctr-D. Exiting\n");
+      printf ("\nUser entered ctr-D. Exiting\n");
       return 0;
     }
   
