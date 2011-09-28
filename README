@@ -1,3 +1,48 @@
-Welcome to Charlie's basic_shell project.
-Purpose: Contruct a simple shell that will execute by parsing the commands
-passed to it and executing it by searching it in the PATH variable.
+Programmer: Arun Augustine
+
+Purpose: Construct a simple shell that will execute the user commands.
+
+HOW IT'S DONE
+-------------
+
+- In main, an infinite while loop is run, which gets user input using fgets.
+- If fgets returns NULL, it means it encountered an EOF (Ctrl-D) character.
+  As per requirements, we exit the shell.
+- The newline character at the end of the user input is cleaned up by searching
+  for it using strchr and putting a null character there instead. This is done
+  to avoid complications during the lexing phase.
+- strtok_r, the thread safe version of strtok is used for parsing the user input
+  into tokens. Briefly for each iteration of the strtok_r the remaining string 
+  after removing the current token is passed to strtok_r while checking for NULL
+  and boundary condition on number of tokens.
+- The exection part of the code is abstracted in execute_command function which
+  is passed the array of tokens.
+- In the execute_command function fork() is called.
+- The parent process waits for it's child to exit
+- The child process uses execvp system call to execute the command given by the
+  first member of the array of tokens.
+- Error cases are handled accordingly.
+- To exit the shell user has to enter Ctrl-D which returns '0' since it is the
+  desired mode of exit from the shell.
+
+
+DESIGN CHOICES
+--------------
+
+- How to handle Ctrl-D for exiting: After deliberation between using a getchar()
+  to read if a Ctrl-D is entered and using fgets(), fgets was opted for a 
+  a cleaner code.
+
+- strtok_r vs strtok: strtok_r was chosen since it was thread safe. Also for
+  extendability in future.
+
+
+OTHER NOTES
+------------
+
+This code is also hosted on github.com at:
+
+git@github.com:wirelesscharlie/basic_shell.git
+
+Goto http://help.github.com/fork-a-repo/ for finding how to fork from 
+this code base.

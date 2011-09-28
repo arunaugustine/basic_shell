@@ -7,7 +7,8 @@
 
 typedef enum {
   ALL_OK,
-  FORK_FAILED
+  FORK_FAILED,
+  EXECVP_FAILED
 } aa_status_codes_t;
 
 //int aa_parse_into_tokens(char *);

@@ -21,17 +21,30 @@ aa_status_codes_t execute_command (char* tokens[MAX_TOKENS])
   }
   if (pid > 0){ // Parent process
     int status;
+
+#ifdef DEBUG
     printf("I am the parent process with pid: %d\n", (int)getpid());
+#endif
+
     wait(&status);
     return ALL_OK;
   }
 
   if (pid == 0){//Child Process
-    //    printf("I am the child process with pid: %d, parent is:%d\n", (int)getpid(),(int)getppid());
-    //    getchar();
+
+#ifdef DEBUG
+    printf("I am the child process with pid: %d, parent is:%d\n", (int)getpid(),(int)getppid());
+#endif
+
     int exec_status;
     exec_status = execvp(command, tokens);
-    exit(ALL_OK);
+    if (exec_status == -1){
+      //some error happened during execvp
+      printf("Bad command :( . Please try again\n");
+      exit(EXECVP_FAILED);
+    }
+    else
+      exit(ALL_OK);
   }
 }
 int main ( void ) {
@@ -44,45 +57,52 @@ int main ( void ) {
   char *ptr; //points to beginning of userInput
   while (1) {
     /* Display the prompt */
-  char userInput[MAX_USER_INPUT];
-  printf("shell:");
+    char userInput[MAX_USER_INPUT];
+    printf("shell:");
     /* Read the user command */
-  if (fgets(userInput, sizeof(userInput), stdin) != NULL){
+    if (fgets(userInput, sizeof(userInput), stdin) != NULL){
 
-    /* clean up the newline character */
-    if ((p = strchr(userInput, '\n')) != NULL){
-      *p = '\0';
-    }
-
-    //TODO: remove test printf
-    printf("The user entered: %s \n", userInput);
-
-    ptr = userInput;
-    i = 0;
-    while ((tokens[i] = strtok_r(ptr, " ",&savptr)) != NULL && i< MAX_TOKENS){
-      i++;
-      ptr = savptr;
+      /* clean up the newline character */
+      if ((p = strchr(userInput, '\n')) != NULL){
+	*p = '\0';
       }
 
-    
-    /* for(i = 0; i < MAX_TOKENS; i++){ */
-    /*   printf("The tokens number %d is %s\n", i, tokens[i]); */
-    /*         if(tokens[i] == NULL) break; */
-    /* } */
-    my_status =  execute_command(tokens);
-    if(my_status != ALL_OK){
-      printf("somekind of error occured. Handle it here\n");
-    }
-    else printf("everything went smoothly\n");
+#ifdef DEBUG
+      printf("The user entered: %s \n", userInput);
+#endif
 
-    
-  }
-  /* Handle Ctl-D */
-  else {
-    printf ("User entered ctr-D. Exiting\n");
-    return 1;
-  }
+      ptr = userInput;
+      i = 0;
+      while ((tokens[i] = strtok_r(ptr, " ",&savptr)) != NULL && i< MAX_TOKENS){
+	i++;
+	ptr = savptr;
+      }
+
+#ifdef DEBUG    
+      for(i = 0; i < MAX_TOKENS; i++){
+	printf("The tokens number %d is %s\n", i, tokens[i]);
+	if(tokens[i] == NULL) break;
+      }
+#endif
+
+      my_status =  execute_command(tokens);
+      if(my_status != ALL_OK){
+#ifdef DEBUG
+	printf("somekind of error occured. Handle it here\n");
+#endif
+      }
+      else {
+#ifdef DEBUG 
+	printf("everything went smoothly\n");
+#endif
+      }
+    }
+    /* Handle Ctl-D */
+    else {
+      printf ("User entered ctr-D. Exiting\n");
+      return 0;
+    }
   
-}
+  }
 
 } // main
