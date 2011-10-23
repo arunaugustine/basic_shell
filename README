@@ -1,5 +1,48 @@
 Programmer: Arun Augustine
 
+ADVANCED SHELL GOALS:
+
+1. Redirect input or output (or both) of a command. That is, support <, > and >> similar
+   to bash
+2. Connect several commands using piping, i.e., support |
+
+HOw IT'S DONE
+--------------
+
+- For redirection, if the command contains any of the special characters <, > or >>
+  a FD pointing to the file specified is opened and using dup2, duplicated as STDIN 
+  or STDOUT
+
+- For connecting several commands using pipe, we consider that each command may have
+  a left pipe ( a pipe to read from) or a right pipe (a pipe to write to). Using dup2
+  we appropriately duplicates STDIN or STDOUT to the write/read end of these pipes. 
+  The right pipe of a command becomes the left pipe of the command following it. Special
+  care is taken, to close the appropriate file/pipe descriptors both in the parent and 
+  child process. Also the pipe is created before forking so that both parent and child 
+  inherits the pipe.
+
+DESIGN CHOICES
+--------------
+
+- Earlier parsing was being done using strtok_r function. Since for the current project, 
+  we need to support parsing based on space or any of the special characters <. >, >>, |
+  a custom my_tokenize function was written to achieve this. It basically takes the input
+  sting and converts it into an array of null terminated strings, which can then be parsed
+  in a second pass, by appropriate functions.
+
+- Functions to execute input and output redirections are implemented as speprate functions
+  for code modularity. An execute_advanced_command calls the appropriate function for subcommands
+  parsed using the | as seperator.
+
+- A key issue to solve was to close the appropriate ends of the pipes in both child and parent 
+  processes. Especially in the parent, the file descriptors needed to be closed before calling
+  waitpid() to wait on the child to execute the sub command.
+
+ARCHIVE:
+--------
+The readme that was part of the first part of this project is included below for reference.
+
+BASIC_SHELL Project:
 Purpose: Construct a simple shell that will execute the user commands.
 
 HOW IT'S DONE
