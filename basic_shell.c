@@ -332,6 +332,7 @@ aa_status_codes_t execute_advanced_command(char *tokens[], int *specialCharCount
 	i++;
 	internalTokens[i] = NULL;
 	status = execute_input_redirection_command(internalTokens, fileConnect, NULL, NULL, &pid_return);
+	waitpid(pid_return, &child_status, 0);
 	if (status == ALL_OK) {
 	  index++;
 	  clear_internal_tokens(internalTokens);
@@ -350,6 +351,7 @@ aa_status_codes_t execute_advanced_command(char *tokens[], int *specialCharCount
 	i++;
 	internalTokens[i] = NULL;
 	status = execute_output_redirection_command(internalTokens, NULL, NULL, &pid_return);
+	waitpid(pid_return, &child_status, 0);
 	if(status == ALL_OK) {
 	  index++;
 	  clear_internal_tokens(internalTokens);
