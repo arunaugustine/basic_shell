@@ -29,7 +29,7 @@ aa_status_codes_t execute_command (char* tokens[MAX_TOKENS])
     printf("I am the parent process with pid: %d\n", (int)getpid());
 #endif
 
-    wait(&status);
+    waitpid(pid, &status, 0);
     return ALL_OK;
   }
 
@@ -50,7 +50,61 @@ aa_status_codes_t execute_command (char* tokens[MAX_TOKENS])
       exit(ALL_OK);
   }
 }
-aa_status_codes_t execute_input_redirection_command(char *tokens[], int fileConnect)
+
+void set_left_pipe_read(int *leftPipe)
+{
+dup2(leftPipe[0],STDIN);
+close(leftPipe[0]); // Copy made above
+close(leftPipe[1]); // We don't need this
+}
+
+void set_right_pipe_write(int *rightPipe)
+{
+dup2(rightPipe[1],STDOUT);
+close(rightPipe[0]); // We don't need this
+close(rightPipe[1]); //Copy made already
+}
+
+aa_status_codes_t execute_simple_command (char* tokens[], int *leftPipe, int *rightPipe, pid_t *pid_return)
+{
+
+  char * command;
+  const int STDIN = 0, STDOUT = 1;
+  pid_t child_pid;
+  pid_t parent_pid;
+  command = tokens[0];
+  pid_t pid = fork();
+
+  if (pid < 0){
+    fprintf(stderr, "Fork failed\n");
+    return FORK_FAILED;
+  }
+  if (pid > 0){ // Parent process
+    int status;
+    *pid_return= pid;
+    //waitpid(pid, &status, 0);
+    return ALL_OK;
+  }
+  if (pid == 0){//Child Process
+  if(leftPipe){
+  set_left_pipe_read(leftPipe);
+  }
+  if(rightPipe){
+  set_right_pipe_write(rightPipe);
+  }
+    int exec_status;
+    exec_status = execvp(command, tokens);
+    if (exec_status == -1){
+      //some error happened during execvp
+      printf("Bad command :( Please try again\n");
+      exit(EXECVP_FAILED);
+    }
+    else
+      exit(ALL_OK);
+  }
+}
+
+aa_status_codes_t execute_input_redirection_command(char *tokens[], int fileConnect, int *leftPipe, int *rightPipe, pid_t *pid_return)
 {
   int index, pos;
   const int STDIN = 0, STDOUT = 1;
@@ -73,12 +127,21 @@ aa_status_codes_t execute_input_redirection_command(char *tokens[], int fileConn
 
   if(pid > 0){ //parent
     int child_status;
-    wait(&child_status);
+    *pid_return = pid; 
     return (ALL_OK);
   }
 
   if(pid == 0){//child
     int exec_status;
+    if(leftPipe){
+    //Cannot have a leftPipe since a | cannot come before a < 
+    //printf("Error: a | cannot preceed a <\n");
+    ///return(ILLEGAL_REDIRECTION);
+    set_left_pipe_read(leftPipe);
+    }
+    if(rightPipe){
+      set_right_pipe_write(rightPipe);
+    }
     for (index = 0; tokens[index]!=NULL; index++){
       if(strcmp(tokens[index],"<") == 0) {
 	pos = index;
@@ -90,7 +153,11 @@ aa_status_codes_t execute_input_redirection_command(char *tokens[], int fileConn
       internalTokens[index] = tokens[index];
     }
     internalTokens[index] = NULL;
+
+    if(tokens[pos+1] != NULL){
     infile = open(tokens[pos+1],O_RDONLY);
+    }
+
     if(infile < 0) return (FILE_ERROR);
     else {
       if(close(STDIN)!=0) return(FILE_ERROR_CLOSE);
@@ -126,7 +193,7 @@ aa_status_codes_t execute_input_redirection_command(char *tokens[], int fileConn
   }
 }
 
-aa_status_codes_t execute_output_redirection_command(char *tokens[])
+aa_status_codes_t execute_output_redirection_command(char *tokens[], int *leftPipe, int *rightPipe, pid_t *pid_return)
 {
   int index, pos;
   const int STDIN = 0, STDOUT = 1;
@@ -147,12 +214,23 @@ aa_status_codes_t execute_output_redirection_command(char *tokens[])
 
   if(pid > 0){ //parent
     int child_status;
-    wait(&child_status);
+    *pid_return = pid;
     return (ALL_OK);
   }
 
   if(pid == 0){//child
     int exec_status;
+
+    if(leftPipe){
+      set_left_pipe_read(leftPipe);
+    }
+    if(rightPipe){
+      // there cannot be a rightPipe since a | cannot come after > or >>
+      //printf("Error: a | cannot come after a > or >>\n");
+      //return(ILLEGAL_REDIRECTION);
+      set_right_pipe_write(rightPipe);
+    }
+
     for (index = 0; tokens[index]!=NULL; index++){
       if(strcmp(tokens[index],">") == 0) {
 	pos = index;
@@ -170,7 +248,7 @@ aa_status_codes_t execute_output_redirection_command(char *tokens[])
     }
     internalTokens[index] = NULL;
 
-    if(appendFlag == 1){
+    if(appendFlag == 1 && tokens[pos+1] != NULL){
       outfile = open(tokens[pos+1], O_CREAT | O_WRONLY | O_APPEND, S_IRWXU | S_IRWXG | S_IRWXO);
     }
     else {
@@ -208,70 +286,412 @@ aa_status_codes_t execute_advanced_command(char *tokens[], int *specialCharCount
   int status;
   int nPipes, nIR, nOR, nOAR;
   char * internalTokens[MAX_TOKENS];
+  int leftPipe[2], rightPipe[2];
+  int child_status;
+  pid_t pid_return;
 
   nIR = *(specialCharCount);// # of input redirections
   nOAR = *(specialCharCount + 1);// # of output append redirections
   nOR = *(specialCharCount + 2);// # of output redirections
   nPipes = *(specialCharCount + 3); // # of pipes
 
+  int nPipesProcessed = 0;
+  int nSubCommands = 0;
+
+  nSubCommands = nPipes + 1;
+
   int index, i = 0;
   int fileConnect = 0, readFromPipe = 0, writeToPipe = 0;
+  int foundOutRed = 0, foundInRed = 0;
 
-  for (index = 0; tokens[index] != NULL;) {
+  int subCommandToExecute = 0;// index of subcommand to execute next starting from zero
 
-    if (strcmp(tokens[index], "<") == 0){
-      internalTokens[i] = tokens[index]; // Copy the operator also into internalTokens
+  // if(nPipes > 0){
+  //  pipe(rightPipe);
+  //}
+  if(nPipes == 0){
+    for (index = 0; tokens[index] != NULL;) {
 
-      i++;
-      index++;
-      internalTokens[i] = tokens[index]; //copy the next string which should be the file name
-      if(tokens[index+1] != NULL){
-	if(strcmp(tokens[index+1], ">") == 0 | strcmp(tokens[index+1], ">>") == 0 ){
-	  fileConnect = 1; //set fileConnect flag
-	  i++;
+      if (strcmp(tokens[index], "<") == 0){
+	internalTokens[i] = tokens[index]; // Copy the operator also into internalTokens
+
+	i++;
+	index++;
+	internalTokens[i] = tokens[index]; //copy the next string which should be the file name
+	if(tokens[index+1] != NULL){
+	  if(strcmp(tokens[index+1], ">") == 0 | strcmp(tokens[index+1], ">>") == 0 ){
+	    fileConnect = 1; //set fileConnect flag
+	    i++;
+	    index++;
+	    internalTokens[i] = tokens[index]; // Copy the operator also into internalTokens
+	    i++;
+	    index++;
+	    internalTokens[i] = tokens[index]; //copy the next string which should be the file name
+	  }
+	}
+	i++;
+	internalTokens[i] = NULL;
+	status = execute_input_redirection_command(internalTokens, fileConnect, NULL, NULL, &pid_return);
+	if (status == ALL_OK) {
 	  index++;
-	  internalTokens[i] = tokens[index]; // Copy the operator also into internalTokens
-	  i++;
+	  clear_internal_tokens(internalTokens);
+	  i = 0;
+	}
+
+      }
+
+      else if (strcmp(tokens[index], ">") == 0 | strcmp(tokens[index], ">>") == 0 ){
+	internalTokens[i] = tokens[index]; // Copy the operator also into internalTokens
+
+	i++;
+	index++;
+	internalTokens[i] = tokens[index]; //copy the next string which should be the file name
+
+	i++;
+	internalTokens[i] = NULL;
+	status = execute_output_redirection_command(internalTokens, NULL, NULL, &pid_return);
+	if(status == ALL_OK) {
 	  index++;
-	  internalTokens[i] = tokens[index]; //copy the next string which should be the file name
+	  clear_internal_tokens(internalTokens);
+	  i = 0; //reset i
 	}
       }
-      i++;
-      internalTokens[i] = NULL;
-      status = execute_input_redirection_command(internalTokens, fileConnect);
-      if (status == ALL_OK) {
+
+      else {
+	internalTokens[i] = tokens[index];
+	i++;
 	index++;
-	clear_internal_tokens(internalTokens);
-	i = 0;
       }
 
+
     }
-
-    else if (strcmp(tokens[index], ">") == 0 | strcmp(tokens[index], ">>") == 0 ){
-      internalTokens[i] = tokens[index]; // Copy the operator also into internalTokens
-
-      i++;
-      index++;
-      internalTokens[i] = tokens[index]; //copy the next string which should be the file name
-
-      i++;
-      internalTokens[i] = NULL;
-      status = execute_output_redirection_command(internalTokens);
-      if(status == ALL_OK) {
-	index++;
-	clear_internal_tokens(internalTokens);
-	i = 0; //reset i
-      }
-    }
-
-    else {
-      internalTokens[i] = tokens[index];
-      i++;
-      index++;
-    }
-
-
   }
+
+#if 0
+  else {//there are pipes involved
+    for (index = 0; tokens[index] != NULL;) {
+
+      if (strcmp(tokens[index], "<") == 0) {
+	internalTokens[i] = tokens[index]; // Copy the operator also into internalTokens
+
+	i++;
+	index++;
+	internalTokens[i] = tokens[index]; //copy the next string which should be the file name
+	if(tokens[index+1] != NULL){
+	  if(strcmp(tokens[index+1], ">") == 0 | strcmp(tokens[index+1], ">>") == 0 ){
+	    fileConnect = 1; //set fileConnect flag
+	    i++;
+	    index++;
+	    internalTokens[i] = tokens[index]; // Copy the operator also into internalTokens
+	    i++;
+	    index++;
+	    internalTokens[i] = tokens[index]; //copy the next string which should be the file name
+	  }
+	}
+
+	if (tokens[index+1] != NULL){
+	  if(strcmp(tokens[index+1],"|") == 0){
+	    pipe(rightPipe);
+	    nPipesProcessed++;
+	    index++;
+	  }
+
+	  i++;
+	  internalTokens[i] = NULL;
+
+	  if(nPipesProcessed == 1)//First set of tokens before a pipe
+	  {
+	    status = execute_input_redirection_command(internalTokens, fileConnect, NULL, rightPipe);//first command
+	  }
+	  else if (nPipesProcessed < nPipes) status = execute_input_redirection_command(internalTokens, fileConnect, leftPipe, rightPipe);//not first or last
+	  else execute_input_redirection_command(internalTokens, fileConnect, leftPipe, NULL);// last command
+
+	  if(nPipesProcessed > 1){
+	    close(leftPipe[0]);
+	    close(leftPipe[1]);
+	  }
+	  leftPipe[0] = rightPipe[0];
+	  leftPipe[1] = rightPipe[1];
+
+	  if (status == ALL_OK) {
+	    index++;
+	    clear_internal_tokens(internalTokens);
+	    i = 0;
+	  }
+	}
+      }
+
+      else if (strcmp(tokens[index], ">") == 0 | strcmp(tokens[index], ">>") == 0 ){
+	internalTokens[i] = tokens[index]; // Copy the operator also into internalTokens
+
+	i++;
+	index++;
+	internalTokens[i] = tokens[index]; //copy the next string which should be the file name
+	index++;
+
+	if (tokens[index+1] != NULL){
+	  if(strcmp(tokens[index+1],"|") == 0){
+	    pipe(rightPipe);
+	    nPipesProcessed++;
+	    index++;
+	  }
+	  i++;
+	  internalTokens[i] = NULL;
+
+
+	  if(nPipesProcessed == 1)//First set of tokens before a pipe
+	  {
+	    status = execute_output_redirection_command(internalTokens, NULL, rightPipe);//first command
+	  }
+	  else if (nPipesProcessed < nPipes) status = execute_output_redirection_command(internalTokens, leftPipe, rightPipe);//not first or last
+	  else execute_output_redirection_command(internalTokens, leftPipe, NULL);// last command
+
+	  if(nPipesProcessed > 1){
+	    close(leftPipe[0]);
+	    close(leftPipe[1]);
+	  }
+	  leftPipe[0] = rightPipe[0];
+	  leftPipe[1] = rightPipe[1];
+
+	  //      status = execute_output_redirection_command(internalTokens);
+	  if(status == ALL_OK) {
+	    index++;
+	    clear_internal_tokens(internalTokens);
+	    i = 0; //reset i
+	  }
+	}
+      }
+
+      else if (strcmp(tokens[index],"|") == 0){
+	pipe(rightPipe);
+	nPipesProcessed++;
+
+	//index++;
+	//i++;
+	internalTokens[i] = NULL;
+
+
+	if(nPipesProcessed == 1)//First set of tokens before a pipe
+	{
+	  status = execute_simple_command(internalTokens, NULL, rightPipe);//first command
+	}
+	else if (nPipesProcessed < nPipes) status = execute_simple_command(internalTokens, leftPipe, rightPipe);//not first or last
+	else status = execute_simple_command(internalTokens, leftPipe, NULL);// last command
+
+#if 0
+	if(nPipesProcessed > 0 && nPipesProcessed < nPipes){
+	  close(leftPipe[0]);
+	  close(leftPipe[1]);
+	}
+	leftPipe[0] = rightPipe[0];
+	leftPipe[1] = rightPipe[1];
+#endif
+
+	//      status = execute_output_redirection_command(internalTokens);
+	if(status == ALL_OK) {
+	  index++;
+	  clear_internal_tokens(internalTokens);
+	  i = 0; //reset i
+	}
+      }
+      //accumulation of other tokens
+      else {
+	internalTokens[i] = tokens[index];
+	i++;
+	index++;
+      }
+
+
+    }
+    internalTokens[i] = NULL;
+    status = execute_simple_command(internalTokens, leftPipe, NULL);
+    close(leftPipe[0]);
+    close(leftPipe[1]);
+    clear_internal_tokens(internalTokens);
+    i=0;
+
+  }//when there are pipes involved
+#endif
+
+  else {//there are pipes involved
+    clear_internal_tokens(internalTokens);
+    int lrFlag = 0, rdFlag = 0;
+
+    //Parse first sub-command into internalTokens
+    for(index = 0 ; tokens[index] != NULL ; index++ ) {
+      if(strcmp(tokens[index],"|") == 0 ) //if token is |
+      {
+	internalTokens[i] = NULL;
+	i++;
+	break;
+      }
+      else {
+	internalTokens[i] = tokens[index];
+	i++;
+	//set appropriate flags
+	if(strcmp(tokens[index], "<") == 0)
+	{
+	  lrFlag = 1;
+	}
+	else if((strcmp(tokens[index], ">") == 0) | (strcmp(tokens[index], ">>") == 0))
+	{
+	rdFlag = 1;
+	}
+      }
+    }  //For loop
+
+    //Let index now point to start of next sub-command
+    index++;
+
+    //Create the frist output pipe
+
+    pipe(rightPipe);
+
+    //Execute appropriate command according to flag with leftFlag set to NULL
+    if(internalTokens[0] != NULL){
+      if (lrFlag == 1 && rdFlag == 0){
+	status = execute_input_redirection_command(internalTokens, 0, NULL, rightPipe, &pid_return);
+      }
+      else if(lrFlag == 0 && rdFlag == 1){
+	status = execute_output_redirection_command(internalTokens, NULL, rightPipe, &pid_return);
+      }
+      else if(lrFlag == 0 && rdFlag == 0){
+	status = execute_simple_command(internalTokens, NULL, rightPipe, &pid_return);
+      }
+      else {
+      printf("Error: illegal redirection character placing\n");
+      return(ILLEGAL_REDIRECTION);
+      }
+    }
+
+    // The first pipe that was the right pipe for first command becomes 
+    // left pipe for the next command
+    leftPipe[0] = rightPipe[0];
+    leftPipe[1] = rightPipe[1];
+
+    waitpid(pid_return, &child_status, 0);
+    subCommandToExecute++; //must be 1 now
+    lrFlag = 0; //reset the flags 
+    rdFlag = 0;
+
+    //Now do similarly for the rest of the sub-commands except the last one
+    for(subCommandToExecute = 1; subCommandToExecute < nSubCommands-1 ; subCommandToExecute ++)
+    {
+
+      //Clean up internalTokens and i
+      i = 0;
+      clear_internal_tokens(internalTokens);
+      // Get the next subcommand into internalTokens
+
+      while(tokens[index]!=NULL){
+	if(strcmp(tokens[index],"|") == 0 ) //if token is |
+	{
+	  internalTokens[i] = NULL;
+	  i++;
+	  break;
+	}
+	else {
+	  internalTokens[i] = tokens[index];
+	  i++;
+	  //set appropriate flags
+	  if(strcmp(tokens[index], "<") == 0)
+	  {
+	    lrFlag = 1;
+	  }
+	  else if((strcmp(tokens[index], ">") == 0) | (strcmp(tokens[index], ">>") == 0))
+	  {
+	    rdFlag = 1;
+	  }
+	}
+	index++;
+      }
+
+      //Let index now point to start of next sub-command
+      index++;
+      // internalTokens now has the current sub command
+      //Create the right pipe for this command since all of them have one.
+
+      pipe(rightPipe);
+
+      //Execute appropriate command according to flag with leftFlag set to NULL
+      if(internalTokens[0] != NULL){
+	if (lrFlag == 1 && rdFlag == 0){
+	  status = execute_input_redirection_command(internalTokens, 0, leftPipe, rightPipe, &pid_return);
+	}
+	else if(lrFlag == 0 && rdFlag == 1){
+	  status = execute_output_redirection_command(internalTokens, leftPipe, rightPipe, &pid_return);
+	}
+	else if(lrFlag == 0 && rdFlag == 0){
+	  status = execute_simple_command(internalTokens, leftPipe, rightPipe, &pid_return);
+	}
+	else {
+	printf("illegal placing of redirection or pipe characters\n");
+	return(ILLEGAL_REDIRECTION);
+	}
+      }
+
+      close(leftPipe[0]); // close on parent
+      close(leftPipe[1]); // Close on parent
+
+      waitpid(pid_return, &child_status, 0);
+      //subCommandToExecute++; 
+      lrFlag = 0;
+      rdFlag = 0;
+
+      // The first pipe that was the right pipe for first command becomes 
+      // right pipe for the next command
+      leftPipe[0] = rightPipe[0];
+      leftPipe[1] = rightPipe[1];
+
+
+    }//big for loop for commands for all sub commands in the middle
+    //index++; // Now point to the beginning of the last sub-command
+
+    //All Pipes are now complete. Copy final tokens into internalTokens
+    i = 0;
+    clear_internal_tokens(internalTokens);
+    while(tokens[index]!=NULL)
+    {
+	  internalTokens[i] = tokens[index];
+	  //set appropriate flags
+	  if(strcmp(tokens[index], "<") == 0)
+	  {
+	    lrFlag = 1;
+	  }
+	  else if((strcmp(tokens[index], ">") == 0) | (strcmp(tokens[index], ">>") == 0))
+	  {
+	    rdFlag = 1;
+	  }
+	  i++;
+	  index++;
+    }
+    internalTokens[i] = NULL;
+    //Execute Appropriate Command
+    if(internalTokens[0] != NULL){
+      if (lrFlag == 1 && rdFlag == 0){
+	status = execute_input_redirection_command(internalTokens, 0, leftPipe, NULL, &pid_return);
+      }
+      else if(lrFlag == 0 && rdFlag == 1){
+	status = execute_output_redirection_command(internalTokens, leftPipe, NULL, &pid_return);
+      }
+      else if(lrFlag == 0 && rdFlag == 0){
+	status = execute_simple_command(internalTokens, leftPipe, NULL, &pid_return);
+      }
+      else {
+	printf("illegal placing of redirection or pipe characters\n");
+	return(ILLEGAL_REDIRECTION);
+      }
+    }
+    // Close the left (final) pipe
+    close(leftPipe[0]);
+    close(leftPipe[1]);
+
+    //wait(&child_status);
+    waitpid(pid_return, &child_status, 0);
+    subCommandToExecute++; //must be 1 now
+
+}
+
   return(status);
 }
 
